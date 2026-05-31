@@ -1,0 +1,27 @@
+[workspace]
+members = [
+    "crates/inari-core",
+    "crates/inari-lua",
+    "crates/inari-api",
+    "crates/inari-cli",
+    "src-tauri",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Portable Windows dev runtime manager (nginx, PHP, MariaDB, Redis) — part of SushiBox."
+authors = ["Quang Quốc (quocmffx)"]
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+inari-core = { path = "crates/inari-core" }
+inari-lua  = { path = "crates/inari-lua" }
+inari-api  = { path = "crates/inari-api" }

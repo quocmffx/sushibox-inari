@@ -1,0 +1,17 @@
+[package]
+name    = "inari-api"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+inari-core.workspace = true
+anyhow.workspace     = true
+serde.workspace      = true
+serde_json.workspace = true
+tokio.workspace      = true
+tracing.workspace    = true
+axum       = { version = "0.7", features = ["macros"] }
+tower-http = { version = "0.5", features = ["cors"] }
+sysinfo    = "0.32"
+rust-embed = { version = "8" }
+mime_guess = "2"

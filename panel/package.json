@@ -1,0 +1,14 @@
+{
+  "name": "panel",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt generate",
+    "preview": "nuxt preview"
+  },
+  "dependencies": {
+    "@nuxt/ui": "^4.8.1",
+    "nuxt": "^4.4.6"
+  }
+}

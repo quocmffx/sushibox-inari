@@ -1,0 +1,29 @@
+[package]
+name    = "app"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "Inari"
+path = "src/main.rs"
+
+[lib]
+name       = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2" }
+
+[dependencies]
+tauri        = { version = "2", features = ["tray-icon"] }
+tauri-plugin-log = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-notification = "2"
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+tokio        = { version = "1", features = ["full"] }
+tracing      = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+inari-core   = { path = "../crates/inari-core" }
+inari-api    = { path = "../crates/inari-api" }
+inari-lua    = { path = "../crates/inari-lua" }

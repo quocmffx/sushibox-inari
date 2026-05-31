@@ -1,0 +1,11 @@
+[package]
+name    = "inari-lua"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+inari-core.workspace = true
+anyhow.workspace     = true
+serde.workspace      = true
+tracing.workspace    = true
+mlua = { version = "0.10", features = ["lua54", "vendored"] }

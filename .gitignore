@@ -1,0 +1,31 @@
+/target/
+/dist/
+
+# Runtime binaries (fetched via scripts/fetch-runtime.ps1, never committed)
+/runtime/nginx/
+/runtime/php/
+/runtime/mysql/
+/runtime/redis/
+/runtime/adminer/
+/runtime/webview2/
+
+# Built executable + its WebView2 user-data (generated at runtime)
+/Inari.exe
+/inari-cli.exe
+*.WebView2/
+
+# Generated at runtime
+/config/
+/data/
+/logs/
+*.pid
+.env
+
+# Panel deps (panel/dist IS committed — rust-embed bundles it at build time)
+/panel/node_modules/
+
+# Temporary scratch output from scripts/ (audit, smoke tests, etc.)
+/scripts/*.out
+/scripts/*.txt
+/scripts/_*.ps1
+/scripts/relnotes.md

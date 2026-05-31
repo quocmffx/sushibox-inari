@@ -1,0 +1,56 @@
+# SushiBox Inari — runtime binary manifest
+# Run scripts/fetch-runtime.ps1 to download and verify these into runtime/
+# Binaries are NOT committed to the repo.
+
+[nginx]
+version = "1.18.0"
+url     = "https://nginx.org/download/nginx-1.18.0.zip"
+sha256  = ""
+dest    = "runtime/nginx"
+strip   = 1
+
+[php]
+# PHP 8.4 NTS x64 (non-thread-safe, for php-cgi FastCGI mode)
+version = "8.4.21"
+url     = "https://windows.php.net/downloads/releases/php-8.4.21-nts-Win32-vs17-x64.zip"
+sha256  = ""
+dest    = "runtime/php"
+strip   = 0
+
+[mysql]
+# MariaDB 10.3.x — MySQL-5.7-era compatible, no caching_sha2_password
+version = "10.3.39"
+url     = "https://downloads.mariadb.org/rest-api/mariadb/10.3.39/mariadb-10.3.39-winx64.zip"
+sha256  = ""
+dest    = "runtime/mysql"
+strip   = 1
+
+[redis]
+# Redis 5.x for Windows (tporadowski fork — last 5.x build)
+version = "5.0.14.1"
+url     = "https://github.com/tporadowski/redis/releases/download/v5.0.14.1/Redis-x64-5.0.14.1.zip"
+sha256  = ""
+dest    = "runtime/redis"
+strip   = 0
+
+[adminer]
+# Single-file PHP database manager
+version = "4.8.1"
+url     = "https://github.com/vrana/adminer/releases/download/v4.8.1/adminer-4.8.1.php"
+sha256  = ""
+dest    = "runtime/adminer/adminer.php"
+single_file = true
+
+[webview2]
+# WebView2 Fixed Version runtime — REQUIRED for Server 2019/2022 (no Evergreen).
+# Microsoft serves this behind a dynamic download page, so no direct URL here.
+# Manual fetch (one time):
+#   1. https://developer.microsoft.com/microsoft-edge/webview2/  -> "Fixed Version"
+#   2. Download x64 cab/zip, extract the versioned folder
+#   3. Place its CONTENTS directly under runtime/webview2/
+#      (so runtime/webview2/msedgewebview2.exe exists)
+# If absent, the GUI falls back to the system Evergreen runtime (Win11/Server 2025).
+version = "latest"
+url     = ""
+dest    = "runtime/webview2"
+strip   = 1
