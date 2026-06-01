@@ -12,15 +12,18 @@ use axum::{
 use inari_core::{
     InariConfig, InariPaths,
     job::JobObject,
-    process::{ServiceKind, spawn_service},
+    process::{ServiceKind, ServiceStatus, spawn_service},
     runtime::{descriptor_for, generate_nginx_conf, generate_php_ini, init_mysql_if_needed, stop_service, wait_for_exit},
     settings::Settings,
+    state,
 };
 use mime_guess::from_path;
 use rust_embed::RustEmbed;
 use serde_json::json;
-use sysinfo::{Pid, ProcessesToUpdate, System};
 use tower_http::cors::CorsLayer;
+
+/// Grace period after spawn before trusting a service as "up" (see start.rs).
+const LIVENESS_GRACE_MS: u64 = 400;
 
 // ---------------------------------------------------------------------------
 // Embedded panel assets
@@ -118,13 +121,10 @@ fn start_service_inner(
     config: &InariConfig,
     job: &Option<JobObject>,
 ) -> (bool, String) {
-    if let Some(pid) = read_pid(paths, kind) {
-        let mut sys = System::new();
-        sys.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), false);
-        if sys.process(Pid::from_u32(pid)).is_some() {
-            return (false, format!("already running (pid {pid})"));
-        }
-        remove_pid(paths, kind);
+    // Already running? (PID-reuse-aware; cleans up a stale PID file itself.)
+    if state::is_running(paths, kind) {
+        let pid = read_pid(paths, kind).unwrap_or(0);
+        return (false, format!("already running (pid {pid})"));
     }
     let desc = descriptor_for(kind, paths, config);
     if !desc.is_available() {
@@ -152,6 +152,19 @@ fn start_service_inner(
                 let _ = j.assign(pid);
             }
             drop(svc); // Child::drop() does NOT kill the process
+            // Confirm the process didn't exit immediately (port clash, missing
+            // DLL, bad datadir) before reporting success and persisting a PID.
+            if !state::confirm_alive(pid, kind, LIVENESS_GRACE_MS) {
+                // Try to diagnose which port is in use for a better error.
+                let port = service_port(kind, config);
+                let conflict = inari_core::process::port_in_use(port)
+                    .map(|(p, n)| format!(" (in use by pid {} {})", p, n))
+                    .unwrap_or_default();
+                return (
+                    false,
+                    format!("{} exited immediately — port {} already in use{}?", kind.display_name(), port, conflict),
+                );
+            }
             match write_pid(paths, kind, pid) {
                 Ok(_)  => (true, format!("{} started (pid {pid})", kind.display_name())),
                 Err(e) => (false, e.to_string()),
@@ -161,29 +174,85 @@ fn start_service_inner(
     }
 }
 
+fn stop_service_inner(kind: &ServiceKind, state: &AppState) -> Result<(), String> {
+    let Some(pid) = read_pid(&state.paths, kind) else {
+        return Err("not running".to_string());
+    };
+    // Guard against PID reuse: only act if the recorded PID still belongs to
+    // our service. If it's been recycled, just clear the stale file.
+    if !state::is_running(&state.paths, kind) {
+        remove_pid(&state.paths, kind);
+        return Err("not running".to_string());
+    }
+    let port = service_port(kind, &state.config.lock().unwrap());
+    stop_service(&state.paths, kind, port);
+    wait_for_exit(pid, 5000);
+    remove_pid(&state.paths, kind);
+    Ok(())
+}
+
+/// Public nginx controls own PHP-CGI as a private dependency.
+fn start_public_service_inner(kind: &ServiceKind, state: &AppState) -> (bool, String) {
+    if *kind == ServiceKind::Nginx && !state::is_running(&state.paths, &ServiceKind::Php) {
+        let config = state.config.lock().unwrap().clone();
+        let (ok, msg) = start_service_inner(&ServiceKind::Php, &state.paths, &config, &state.job);
+        if !ok {
+            return (false, format!("PHP dependency failed: {msg}"));
+        }
+    }
+
+    let config = state.config.lock().unwrap().clone();
+    start_service_inner(kind, &state.paths, &config, &state.job)
+}
+
+fn stop_public_service_inner(kind: &ServiceKind, state: &AppState) -> Result<(), String> {
+    let result = stop_service_inner(kind, state);
+    if *kind == ServiceKind::Nginx {
+        let _ = stop_service_inner(&ServiceKind::Php, state);
+    }
+    result
+}
+
 /// Start services by name directly in-process (used by autostart at launch).
 /// Skips unknown names silently. Runs synchronously — call from a bg thread.
 ///
-/// NOTE: No Job Object here — a local JobObject would be dropped at the end of
-/// this function, killing every process it just assigned. The API server's
-/// AppState holds the long-lived job; autostart processes are cleaned up by
-/// Windows when the parent (Inari.exe) exits.
+/// Autostart does not run through the HTTP server state, so it needs its own
+/// process-lifetime Job Object. We intentionally leak the handle after startup:
+/// the OS closes it when Inari.exe exits or is killed, which triggers
+/// KILL_ON_JOB_CLOSE and prevents service orphans.
 pub fn start_services_direct(kinds: &[String], paths: &InariPaths, config: &InariConfig) {
-    let no_job: Option<JobObject> = None;
-    for kind_str in kinds {
-        let kind = match parse_kind(kind_str) {
-            Some(k) => k,
-            None => {
-                tracing::warn!("autostart: unknown service '{kind_str}', skipping");
-                continue;
-            }
-        };
-        let (ok, msg) = start_service_inner(&kind, paths, config, &no_job);
+    let job = JobObject::new().ok();
+
+    // Reorder the requested set into dependency order (backends → PHP → nginx)
+    // regardless of how they were listed in settings.json, so nginx never comes
+    // up before its upstreams.
+    let mut requested: Vec<ServiceKind> =
+        kinds.iter().filter_map(|s| parse_kind(s)).collect();
+    if requested.contains(&ServiceKind::Nginx) && !requested.contains(&ServiceKind::Php) {
+        requested.push(ServiceKind::Php);
+    }
+    let unknown: Vec<&String> = kinds
+        .iter()
+        .filter(|s| parse_kind(s).is_none())
+        .collect();
+    for u in unknown {
+        tracing::warn!("autostart: unknown service '{u}', skipping");
+    }
+
+    for kind in ServiceKind::start_order() {
+        if !requested.contains(kind) {
+            continue;
+        }
+        let (ok, msg) = start_service_inner(kind, paths, config, &job);
         if ok {
             tracing::info!("autostart: {msg}");
         } else {
-            tracing::warn!("autostart: {kind_str} failed — {msg}");
+            tracing::warn!("autostart: {} failed — {msg}", kind.name());
         }
+    }
+
+    if job.is_some() {
+        std::mem::forget(job);
     }
 }
 
@@ -195,8 +264,14 @@ async fn api_service_start(
         Some(k) => k,
         None => return axum::Json(json!({"ok": false, "error": "unknown service"})),
     };
-    let config = state.config.lock().unwrap().clone();
-    let (ok, msg) = start_service_inner(&kind, &state.paths, &config, &state.job);
+    // Run the blocking spawn + liveness check off the async workers so the
+    // panel can keep serving status polls while a service is coming up.
+    let st = state.clone();
+    let (ok, msg) = tokio::task::spawn_blocking(move || {
+        start_public_service_inner(&kind, &st)
+    })
+    .await
+    .unwrap_or((false, "internal task error".to_string()));
     if ok {
         push_activity(&state, msg.clone());
         axum::Json(json!({"ok": true, "pid": msg}))
@@ -213,16 +288,22 @@ async fn api_service_stop(
         Some(k) => k,
         None => return axum::Json(json!({"ok": false, "error": "unknown service"})),
     };
-    let pid = match read_pid(&state.paths, &kind) {
-        Some(p) => p,
-        None => return axum::Json(json!({"ok": false, "error": "not running"})),
-    };
-    let port = { service_port(&kind, &state.config.lock().unwrap()) };
-    stop_service(&state.paths, &kind, port);
-    remove_pid(&state.paths, &kind);
-    push_activity(&state, format!("{} stopped", kind.display_name()));
-    let _ = pid;
-    axum::Json(json!({"ok": true}))
+    // Stop + wait-for-exit can block for seconds (MariaDB shutdown); keep it off
+    // the async workers.
+    let st = state.clone();
+    let kind_task = kind.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        stop_public_service_inner(&kind_task, &st)
+    })
+    .await
+    .unwrap_or_else(|_| Err("internal task error".to_string()));
+    match result {
+        Ok(()) => {
+            push_activity(&state, format!("{} stopped", kind.display_name()));
+            axum::Json(json!({"ok": true}))
+        }
+        Err(e) => axum::Json(json!({"ok": false, "error": e})),
+    }
 }
 
 async fn api_service_restart(
@@ -233,51 +314,24 @@ async fn api_service_restart(
         Some(k) => k,
         None => return axum::Json(json!({"ok": false, "error": "unknown service"})),
     };
-    if let Some(pid) = read_pid(&state.paths, &kind) {
-        let port = { service_port(&kind, &state.config.lock().unwrap()) };
-        stop_service(&state.paths, &kind, port);
-        wait_for_exit(pid, 3000);
-        remove_pid(&state.paths, &kind);
-    }
-    let desc = {
-        let config = state.config.lock().unwrap();
-        descriptor_for(&kind, &state.paths, &config)
-    };
-    if !desc.is_available() {
-        return axum::Json(json!({"ok": false, "error": "binary not found"}));
-    }
-    if kind == ServiceKind::Nginx {
-        let config = state.config.lock().unwrap();
-        if let Err(e) = generate_nginx_conf(&state.paths, &config) {
-            return axum::Json(json!({"ok": false, "error": e.to_string()}));
-        }
-    }
-    if kind == ServiceKind::Php {
-        if let Err(e) = generate_php_ini(&state.paths) {
-            return axum::Json(json!({"ok": false, "error": e.to_string()}));
-        }
-    }
-    if kind == ServiceKind::Mysql {
-        if let Err(e) = init_mysql_if_needed(&state.paths) {
-            return axum::Json(json!({"ok": false, "error": e.to_string()}));
-        }
-    }
-    match spawn_service(&desc) {
-        Ok(svc) => {
-            let pid = svc.pid();
-            if let Some(job) = &state.job {
-                let _ = job.assign(pid);
-            }
-            drop(svc);
-            match write_pid(&state.paths, &kind, pid) {
-                Ok(_)  => {
-                    push_activity(&state, format!("{} restarted (pid {pid})", kind.display_name()));
-                    axum::Json(json!({"ok": true, "pid": pid}))
-                }
-                Err(e) => axum::Json(json!({"ok": false, "error": e.to_string()})),
-            }
-        }
-        Err(e) => axum::Json(json!({"ok": false, "error": e.to_string()})),
+    let st = state.clone();
+    let kind_task = kind.clone();
+    let (ok, msg) = tokio::task::spawn_blocking(move || {
+        // Stop the current instance (if any) and wait for it to fully exit so
+        // the port is released before we respawn — no fixed-sleep guesswork.
+        // Only stop a PID that still belongs to our service (PID-reuse safe).
+        let _ = stop_public_service_inner(&kind_task, &st);
+        // Reuse the shared start path: conf generation, spawn, Job assignment
+        // and liveness confirmation all happen identically to a normal start.
+        start_public_service_inner(&kind_task, &st)
+    })
+    .await
+    .unwrap_or((false, "internal task error".to_string()));
+    if ok {
+        push_activity(&state, format!("{} restarted", kind.display_name()));
+        axum::Json(json!({"ok": true, "pid": msg}))
+    } else {
+        axum::Json(json!({"ok": false, "error": msg}))
     }
 }
 
@@ -286,27 +340,17 @@ async fn api_service_restart(
 // ---------------------------------------------------------------------------
 
 async fn api_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let pid_map: Vec<(ServiceKind, Option<u32>)> = ServiceKind::all()
-        .iter()
-        .map(|kind| (kind.clone(), read_pid(&state.paths, kind)))
-        .collect();
+    // Single source of truth: PID-reuse-aware liveness that also cleans up
+    // stale PID files, so the panel can never disagree with the CLI.
+    let statuses = state::statuses(&state.paths, ServiceKind::public(), |_| true);
 
-    let sysinfo_pids: Vec<Pid> = pid_map
+    let services: Vec<_> = statuses
         .iter()
-        .filter_map(|(_, p)| p.map(Pid::from_u32))
-        .collect();
-
-    let mut sys = System::new();
-    if !sysinfo_pids.is_empty() {
-        sys.refresh_processes(ProcessesToUpdate::Some(&sysinfo_pids), false);
-    }
-
-    let services: Vec<_> = pid_map
-        .iter()
-        .map(|(kind, pid)| {
-            let running = pid
-                .map(|p| sys.process(Pid::from_u32(p)).is_some())
-                .unwrap_or(false);
+        .map(|(kind, status)| {
+            let (running, pid) = match status {
+                ServiceStatus::Running { pid } => (true, Some(*pid)),
+                _ => (false, None),
+            };
             json!({
                 "kind":    kind.name(),
                 "name":    kind.display_name(),
@@ -329,6 +373,10 @@ async fn api_config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             "web":   config.ports.web,
             "mysql": config.ports.mysql,
             "redis": config.ports.redis,
+        },
+        "php": {
+            "version": ServiceKind::Php.version(),
+            "cgi_port": 9000,
         },
         "sites": config.sites.iter().map(|s| json!({
             "name": s.name,
@@ -354,19 +402,32 @@ async fn api_set_settings(
     if let Err(e) = settings.save(&state.paths.data) {
         return axum::Json(json!({"ok": false, "error": e.to_string()}));
     }
-    // Reconcile the Windows "run at startup" registry entry with the setting.
-    // This only controls whether Inari launches at boot, not which services run.
-    if let Err(e) = inari_core::startup::apply(settings.run_at_startup) {
-        tracing::warn!("run_at_startup apply failed: {e}");
-    }
     // Re-apply onto base flavor config → update live effective config.
     let effective = settings.apply_to(state.base.clone());
     {
         let mut cfg = state.config.lock().unwrap();
         *cfg = effective;
     }
-    push_activity(&state, "settings updated".to_string());
-    axum::Json(json!({"ok": true, "note": "Restart affected services to apply ports/sites."}))
+    // Regenerate nginx.conf so port/site changes are written to disk even if
+    // nginx is stopped. If nginx is running, a restart is still required.
+    let nginx_running = state::is_running(&state.paths, &ServiceKind::Nginx);
+    let nconf_ok = {
+        let cfg = state.config.lock().unwrap();
+        generate_nginx_conf(&state.paths, &cfg).is_ok()
+    };
+    let note = if !nconf_ok {
+        "settings saved but nginx.conf write failed; check logs.".to_string()
+    } else if nginx_running {
+        "settings saved. Restart Nginx to apply port/site changes.".to_string()
+    } else {
+        "settings saved. Start Nginx to apply port/site changes.".to_string()
+    };
+    push_activity(&state, format!("settings updated — {note}"));
+    // Reconcile the Windows "run at startup" registry entry with the setting.
+    if let Err(e) = inari_core::startup::apply(settings.run_at_startup) {
+        tracing::warn!("run_at_startup apply failed: {e}");
+    }
+    axum::Json(json!({"ok": true, "note": note}))
 }
 
 async fn api_activity(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -390,11 +451,13 @@ async fn api_open(
     Path(target): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    // "web" opens the running site in the system browser; "repo" opens the
-    // project's GitHub page; the rest open folders.
-    if target == "web" || target == "repo" {
+    // URL targets open in the system browser; the rest open folders/files.
+    if target == "web" || target == "repo" || target == "adminer" {
         let url = if target == "repo" {
             "https://github.com/quocmffx/sushibox-inari".to_string()
+        } else if target == "adminer" {
+            let config = state.config.lock().unwrap();
+            format!("http://localhost:{}/_inari/adminer.php", config.ports.web)
         } else {
             let config = state.config.lock().unwrap();
             format!("http://localhost:{}", config.ports.web)
@@ -420,6 +483,7 @@ async fn api_open(
         "config" => state.paths.config.clone(),
         "logs"   => state.paths.logs.clone(),
         "data"   => state.paths.data.clone(),
+        "phpIni" => state.paths.php_ini(),
         _ => return axum::Json(json!({"ok": false, "error": "unknown target"})),
     };
     match open_path(&path) {
@@ -475,17 +539,13 @@ fn service_port(kind: &ServiceKind, config: &InariConfig) -> u16 {
 }
 
 fn read_pid(paths: &InariPaths, kind: &ServiceKind) -> Option<u32> {
-    std::fs::read_to_string(paths.pid_file(kind.name()))
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
+    state::read_pid(paths, kind)
 }
 
 fn write_pid(paths: &InariPaths, kind: &ServiceKind, pid: u32) -> Result<()> {
-    std::fs::create_dir_all(&paths.data)?;
-    std::fs::write(paths.pid_file(kind.name()), pid.to_string())
-        .map_err(|e| anyhow::anyhow!("Cannot write PID file: {e}"))
+    state::write_pid(paths, kind, pid)
 }
 
 fn remove_pid(paths: &InariPaths, kind: &ServiceKind) {
-    let _ = std::fs::remove_file(paths.pid_file(kind.name()));
+    state::remove_pid(paths, kind)
 }

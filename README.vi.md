@@ -33,6 +33,8 @@ Inari là một phần của bộ công cụ **SushiBox**.
 - **Cấu hình ưu tiên GUI.** Cổng, thư mục web, tự khởi động, chế độ tối và ngôn
   ngữ đều chỉnh trong bảng điều khiển. Không phải sửa file cấu hình bằng tay.
 - **Tự khởi động khi mở.** Chọn dịch vụ nào sẽ chạy khi bạn mở Inari.
+- **Adminer kèm sẵn.** Mở giao diện quản trị database local ngay từ bảng điều
+  khiển khi web stack đang chạy.
 - **Khay hệ thống (tray).** Đóng cửa sổ là thu xuống tray; stack vẫn chạy.
 - **Giao diện tiếng Anh và tiếng Việt**, đổi trong Cài đặt.
 
@@ -44,6 +46,8 @@ Inari là một phần của bộ công cụ **SushiBox**.
 4. Trang web được phục vụ từ `sites/default` tại <http://localhost:8080>.
 
 Dùng nút **Mở trang web** trong bảng điều khiển để mở site trong trình duyệt.
+Khi nginx/PHP đang chạy, nút **Adminer** mở giao diện quản trị database kèm sẵn
+tại `/_inari/adminer.php` mà không cần chép file vào thư mục web của bạn.
 
 > **Lưu ý SmartScreen.** Inari chưa được ký số, nên Windows SmartScreen có thể
 > hiện "Windows protected your PC" ở lần chạy đầu. Bấm **More info → Run
@@ -66,6 +70,19 @@ PHP-CGI lắng nghe nội bộ ở cổng 9000. Mọi dịch vụ chỉ bind và
 thư mục khác). nginx định tuyến `*.php` sang PHP-CGI; file tĩnh phục vụ trực
 tiếp. Gói có sẵn `index.php` mẫu và endpoint JSON `health.php` để bạn kiểm tra
 stack hoạt động.
+
+### Laravel
+
+Với Laravel, hãy trỏ **Thư mục web** tới thư mục `public/` của app, không phải
+root của project:
+
+```text
+D:\code\my-laravel-app\public
+```
+
+nginx config do Inari sinh ra đã hỗ trợ kiểu front-controller của Laravel: file
+tĩnh được phục vụ trực tiếp, còn route không khớp file thật sẽ rơi về
+`/index.php?$query_string`.
 
 ## Dòng lệnh
 

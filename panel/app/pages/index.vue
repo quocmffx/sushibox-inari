@@ -9,6 +9,7 @@ interface Service {
 interface Config {
   flavor: string
   ports: Record<string, number>
+  php?: { version: string; cgi_port: number }
   sites: { name: string; root: string }[]
 }
 
@@ -78,14 +79,14 @@ interface ServerSettings {
   run_at_startup?: boolean
   start_minimized?: boolean
 }
-const settingsTab = ref<'general' | 'services'>('general')
+const settingsTab = ref<'general' | 'services' | 'php'>('general')
 const savingSettings = ref(false)
 // Editable form models (seeded from /api/config effective values)
 const portWeb = ref<number>(8080)
 const portMysql = ref<number>(3307)
 const portRedis = ref<number>(6380)
 const docRoot = ref<string>('sites/default')
-const autostartKinds = ref<Record<string, boolean>>({ nginx: false, php: false, mysql: false, redis: false })
+const autostartKinds = ref<Record<string, boolean>>({ nginx: false, mysql: false, redis: false })
 const runAtStartup = ref<boolean>(false)
 const startMinimized = ref<boolean>(false)
 
@@ -119,9 +120,13 @@ async function saveServerSettings() {
     start_minimized: startMinimized.value,
   }
   try {
-    await $fetch('/api/settings', { method: 'POST', body })
-    pushMessage(t('settingsSaved'), true)
-    await refresh()
+    const res = await $fetch<{ ok: boolean; note?: string; error?: string }>('/api/settings', { method: 'POST', body })
+    if (res.ok) {
+      pushMessage(res.note ?? t('settingsSaved'), true)
+      await refresh()
+    } else {
+      pushMessage(`${t('settings')}: ${res.error ?? t('saveFailed')}`, false)
+    }
   }
   catch (e: any) {
     pushMessage(`${t('settings')}: ${e?.data?.error ?? t('saveFailed')}`, false)
@@ -138,10 +143,11 @@ function openSettings() {
 
 const servicePort = (kind: string): number | undefined => ({
   nginx: config.value?.ports?.web,
-  php:   9000,
   mysql: config.value?.ports?.mysql,
   redis: config.value?.ports?.redis,
 } as Record<string, number | undefined>)[kind]
+const phpVersion = computed(() => config.value?.php?.version ?? '8.4.21')
+const phpCgiPort = computed(() => config.value?.php?.cgi_port ?? 9000)
 
 // Aggregate state for bulk-action enable/disable
 const runningCount = computed(() => status.value?.services?.filter(s => s.state === 'running').length ?? 0)
@@ -188,9 +194,16 @@ const serviceAction = async (kind: string, name: string, action: 'start' | 'stop
 
 // Bulk
 const bulkPending = ref<string | null>(null)
+// Dependency-aware user-facing order. PHP-CGI is managed internally by nginx.
+const START_ORDER = ['mysql', 'redis', 'nginx']
+const STOP_ORDER = ['nginx', 'redis', 'mysql']
 const bulkAction = async (action: 'start' | 'stop' | 'restart') => {
   bulkPending.value = action
-  for (const svc of status.value?.services ?? []) {
+  const order = action === 'start' ? START_ORDER : STOP_ORDER
+  const svcs = [...(status.value?.services ?? [])].sort(
+    (a, b) => order.indexOf(a.kind) - order.indexOf(b.kind),
+  )
+  for (const svc of svcs) {
     if (action === 'start' && svc.state === 'running') continue
     if (action !== 'start' && svc.state !== 'running') continue
     await runAction(svc.kind, svc.name, action)
@@ -271,7 +284,7 @@ const openTarget = async (target: string, label: string) => {
                 <span class="text-[10px] font-normal text-dimmed">{{ svc.version }}</span>
               </p>
               <p class="text-[10px] font-mono text-dimmed leading-tight">
-                :{{ servicePort(svc.kind) }}<span v-if="svc.pid"> · {{ svc.pid }}</span>
+                :{{ servicePort(svc.kind) }}<span v-if="svc.kind === 'nginx'"> · PHP {{ phpVersion }}</span><span v-if="svc.pid"> · {{ svc.pid }}</span>
               </p>
             </div>
             <!-- Stopped: single Start. Running: Stop + Restart as quiet icons. -->
@@ -327,13 +340,19 @@ const openTarget = async (target: string, label: string) => {
       </UCard>
 
       <!-- Dev shortcuts — turn the demo/test loop into buttons, no terminal. -->
-      <div class="grid grid-cols-3 gap-1.5">
+      <div class="grid grid-cols-4 gap-1.5">
         <UButton
           icon="i-lucide-external-link" color="neutral" variant="outline" size="xs" block
           :disabled="!nginxRunning"
           :title="t('openSite')"
           @click="openTarget('web', t('openSite'))"
         >{{ t('openSite') }}</UButton>
+        <UButton
+          icon="i-lucide-database" color="neutral" variant="outline" size="xs" block
+          :disabled="!nginxRunning"
+          :title="t('openAdminer')"
+          @click="openTarget('adminer', t('openAdminer'))"
+        >{{ t('openAdminer') }}</UButton>
         <UButton
           icon="i-lucide-folder" color="neutral" variant="outline" size="xs" block
           :title="t('siteFolder')"
@@ -393,6 +412,11 @@ const openTarget = async (target: string, label: string) => {
               :class="settingsTab === 'services' ? 'bg-default font-medium text-highlighted shadow-sm' : 'text-muted'"
               @click="settingsTab = 'services'"
             >{{ t('tabServices') }}</button>
+            <button
+              class="flex-1 text-xs py-1 rounded transition-colors"
+              :class="settingsTab === 'php' ? 'bg-default font-medium text-highlighted shadow-sm' : 'text-muted'"
+              @click="settingsTab = 'php'"
+            >{{ t('tabPhp') }}</button>
           </div>
 
           <!-- General tab -->
@@ -459,6 +483,32 @@ const openTarget = async (target: string, label: string) => {
             </div>
           </div>
 
+          <!-- PHP tab -->
+          <div v-show="settingsTab === 'php'" class="space-y-2.5">
+            <div class="bg-elevated/40 rounded-md p-2">
+              <p class="text-[11px] font-semibold text-highlighted mb-2">{{ t('phpSettings') }}</p>
+              <div class="space-y-1.5">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs text-muted">{{ t('phpVersion') }}</span>
+                  <UInput v-model="phpVersion" size="xs" class="w-24" :disabled="true" placeholder="8.4.21 (bundled)" />
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="text-xs text-muted">{{ t('phpCgiPort') }}</span>
+                  <UInputNumber v-model="phpCgiPort" :min="1" :max="65535" size="xs" class="w-24" :format-options="{ useGrouping: false }" />
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="text-xs text-muted">{{ t('openPhpIni') }}</span>
+                  <UButton @click="openTarget('phpIni', t('openPhpIni'))" color="neutral" variant="outline" size="xs">
+                    {{ t('openPhpIni') }}
+                  </UButton>
+                </div>
+                <div class="flex items-center justify-between mt-4">
+                  <span class="text-xs text-muted italic">{{ t('phpHint') }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- Services tab -->
           <div v-show="settingsTab === 'services'" class="space-y-2.5">
             <div class="bg-elevated/40 rounded-md p-2">
@@ -485,10 +535,6 @@ const openTarget = async (target: string, label: string) => {
                 <div class="flex items-center justify-between">
                   <span class="text-xs text-muted">{{ t('nginx') }}</span>
                   <USwitch v-model="autostartKinds.nginx" size="sm" />
-                </div>
-                <div class="flex items-center justify-between">
-                  <span class="text-xs text-muted">{{ t('phpCgi') }}</span>
-                  <USwitch v-model="autostartKinds.php" size="sm" />
                 </div>
                 <div class="flex items-center justify-between">
                   <span class="text-xs text-muted">{{ t('mariadb') }}</span>

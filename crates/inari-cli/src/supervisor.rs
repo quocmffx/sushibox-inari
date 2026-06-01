@@ -1,12 +1,9 @@
-use std::fs;
-
-use anyhow::{Context, Result};
 use inari_core::{
     config::InariConfig,
     paths::InariPaths,
     process::{ServiceDescriptor, ServiceKind, ServiceStatus},
+    state,
 };
-use sysinfo::{Pid, ProcessesToUpdate, System};
 use tracing::warn;
 
 // Shared runtime logic now lives in inari-core; re-export so existing
@@ -29,51 +26,26 @@ pub fn load_config(paths: &InariPaths) -> InariConfig {
 }
 
 // ---------------------------------------------------------------------------
-// PID helpers
+// PID helpers — thin re-exports of the shared state module so the CLI, panel
+// and API all read/write liveness identically.
 // ---------------------------------------------------------------------------
 
-pub fn write_pid(paths: &InariPaths, kind: &ServiceKind, pid: u32) -> Result<()> {
-    fs::create_dir_all(&paths.data)?;
-    fs::write(paths.pid_file(kind.name()), pid.to_string())
-        .with_context(|| format!("Cannot write PID file for {}", kind.name()))
-}
-
-pub fn read_pid(paths: &InariPaths, kind: &ServiceKind) -> Option<u32> {
-    fs::read_to_string(paths.pid_file(kind.name()))
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-}
-
-pub fn remove_pid(paths: &InariPaths, kind: &ServiceKind) {
-    let _ = fs::remove_file(paths.pid_file(kind.name()));
-}
+pub use inari_core::state::{read_pid, remove_pid, write_pid};
 
 // ---------------------------------------------------------------------------
-// Status check
+// Status check — delegates to the shared, PID-reuse-aware state module.
 // ---------------------------------------------------------------------------
 
 pub fn check_status(
     paths: &InariPaths,
     descriptors: &[ServiceDescriptor],
 ) -> Vec<(ServiceKind, ServiceStatus)> {
-    let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
-
-    descriptors.iter().map(|desc| {
-        let status = if !desc.is_available() {
-            ServiceStatus::MissingBinary
-        } else if let Some(pid) = read_pid(paths, &desc.kind) {
-            if sys.process(Pid::from_u32(pid)).is_some() {
-                ServiceStatus::Running { pid }
-            } else {
-                remove_pid(paths, &desc.kind);
-                ServiceStatus::Stopped
-            }
-        } else {
-            ServiceStatus::Stopped
-        };
-        (desc.kind.clone(), status)
-    }).collect()
+    let kinds: Vec<ServiceKind> = descriptors.iter().map(|d| d.kind.clone()).collect();
+    let available: std::collections::HashMap<ServiceKind, bool> = descriptors
+        .iter()
+        .map(|d| (d.kind.clone(), d.is_available()))
+        .collect();
+    state::statuses(paths, &kinds, |k| available.get(k).copied().unwrap_or(false))
 }
 
 // ---------------------------------------------------------------------------

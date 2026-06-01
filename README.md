@@ -44,6 +44,8 @@ relaunch.
 - **GUI-first configuration.** Ports, web root, auto-start, dark mode, and
   language are all set from the panel. No hand-editing config files.
 - **Auto-start on launch.** Choose which services come up when you open Inari.
+- **Bundled Adminer shortcut.** Open a local database UI from the panel when the
+  web stack is running.
 - **System tray.** Closing the window hides to tray; the stack keeps running.
 - **English and Vietnamese** interface, switchable in Settings.
 
@@ -54,7 +56,9 @@ relaunch.
 3. Click **Start all**, or start services individually.
 4. Your site is served from `sites/default` at <http://localhost:8080>.
 
-Use the **Open site** button in the panel to launch it in your browser.
+Use the **Open site** button in the panel to launch it in your browser. When
+nginx/PHP are running, **Adminer** opens the bundled database UI at
+`/_inari/adminer.php` without copying files into your web root.
 
 > **SmartScreen note.** Inari is not code-signed yet, so Windows SmartScreen may
 > show "Windows protected your PC" on first launch. Click **More info → Run
@@ -77,6 +81,19 @@ Put your PHP project in `sites/default` (or point the **Web root** in Settings
 at another folder). nginx routes `*.php` to PHP-CGI; static files are served
 directly. A starter `index.php` and a `health.php` JSON endpoint ship in the
 default site so you can confirm the stack works.
+
+### Laravel
+
+For Laravel apps, point **Web root** to the app's `public/` folder, not the
+project root:
+
+```text
+D:\code\my-laravel-app\public
+```
+
+Inari's generated nginx config supports Laravel-style front-controller routing:
+static files are served directly, and unknown routes fall through to
+`/index.php?$query_string`.
 
 ## Command line
 

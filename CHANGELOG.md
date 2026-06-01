@@ -2,6 +2,25 @@
 
 All notable changes to Inari are documented here.
 
+## v0.1.0-beta.3 — 2026-06-02
+
+Reliability and Laravel dev polish.
+
+- Added Laravel/front-controller friendly nginx fallback via `try_files`, so
+  deep links route through `index.php` while static files are still served
+  directly.
+- Added an Adminer shortcut served from the bundled runtime at
+  `/_inari/adminer.php`, keeping user web roots clean.
+- Added port conflict diagnostics to start failures: reports which PID and
+  process is already using the port.
+- Hardened service status with PID identity checks to avoid false "running"
+  states after Windows recycles a stale PID.
+- Improved dependency-aware service lifecycle: nginx starts after PHP/backends
+  and stops before the services it depends on.
+- Kept PHP-CGI as an internal nginx dependency in the public UI/status surface.
+- Added `scripts/release-check.ps1` for repeatable beta validation.
+- Fixed deprecated Tauri tray API usage.
+
 ## v0.1.0-beta.2 — 2026-05-31
 
 UX and design pass on top of beta.1.

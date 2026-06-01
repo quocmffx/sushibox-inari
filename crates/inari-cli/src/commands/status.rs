@@ -1,5 +1,5 @@
 use anyhow::Result;
-use inari_core::{paths::InariPaths, process::ServiceStatus};
+use inari_core::{paths::InariPaths, process::{ServiceKind, ServiceStatus}};
 
 use crate::supervisor::{build_descriptors, check_status, load_config};
 
@@ -7,7 +7,10 @@ pub async fn run() -> Result<()> {
     let paths  = InariPaths::from_exe()?;
     let config = load_config(&paths);
     let descs  = build_descriptors(&paths, &config);
-    let stats  = check_status(&paths, &descs);
+    let stats  = check_status(&paths, &descs)
+        .into_iter()
+        .filter(|(kind, _)| ServiceKind::public().contains(kind))
+        .collect::<Vec<_>>();
 
     println!("Inari — service status");
     println!("{}", "─".repeat(48));

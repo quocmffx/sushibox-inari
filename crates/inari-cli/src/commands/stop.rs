@@ -1,7 +1,8 @@
 use anyhow::Result;
 use inari_core::paths::InariPaths;
-use inari_core::runtime::stop_service;
-use sysinfo::{Pid, ProcessesToUpdate, System};
+use inari_core::process::ServiceKind;
+use inari_core::runtime::{stop_service, wait_for_exit};
+use inari_core::state;
 
 use crate::supervisor::{build_descriptors, load_config, read_pid, remove_pid, run_hooks};
 
@@ -10,30 +11,35 @@ pub async fn run() -> Result<()> {
     let config = load_config(&paths);
     let descriptors = build_descriptors(&paths, &config);
 
-    let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
-
-    let port_for = |kind: &inari_core::process::ServiceKind| match kind {
-        inari_core::process::ServiceKind::Nginx => config.ports.web,
-        inari_core::process::ServiceKind::Php   => 9000,
-        inari_core::process::ServiceKind::Mysql => config.ports.mysql,
-        inari_core::process::ServiceKind::Redis => config.ports.redis,
+    let port_for = |kind: &ServiceKind| match kind {
+        ServiceKind::Nginx => config.ports.web,
+        ServiceKind::Php   => 9000,
+        ServiceKind::Mysql => config.ports.mysql,
+        ServiceKind::Redis => config.ports.redis,
     };
 
     let mut stopped = 0usize;
 
-    for desc in &descriptors {
-        if let Some(pid) = read_pid(&paths, &desc.kind) {
-            if sys.process(Pid::from_u32(pid)).is_some() {
-                stop_service(&paths, &desc.kind, port_for(&desc.kind));
-                println!("  [STOP] {} (pid {pid})", desc.kind.display_name());
+    // Stop in reverse dependency order: nginx (front door) first, backends last.
+    for kind in ServiceKind::stop_order() {
+        if descriptors.iter().all(|d| &d.kind != kind) {
+            continue;
+        }
+        if let Some(pid) = read_pid(&paths, kind) {
+            if state::is_running(&paths, kind) {
+                stop_service(&paths, kind, port_for(kind));
+                // Wait for the process to actually exit so its port is freed
+                // (matters for an immediate restart). MariaDB shutdown can take
+                // a moment; cap the wait so a stuck process can't hang us.
+                wait_for_exit(pid, 5000);
+                println!("  [STOP] {} (pid {pid})", kind.display_name());
                 stopped += 1;
             } else {
-                println!("  [GONE] {} — process not found, cleaned up", desc.kind.display_name());
+                println!("  [GONE] {} — process not found, cleaned up", kind.display_name());
             }
-            remove_pid(&paths, &desc.kind);
+            remove_pid(&paths, kind);
         } else {
-            println!("  [----] {} — not running", desc.kind.display_name());
+            println!("  [----] {} — not running", kind.display_name());
         }
     }
 

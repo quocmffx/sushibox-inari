@@ -17,6 +17,7 @@ const messages: Record<Locale, Dict> = {
     running:        'Running',
     stopped:        'Stopped',
     openSite:       'Open site',
+    openAdminer:    'Adminer',
     siteFolder:     'Site folder',
     logsFolder:     'Logs',
 
@@ -48,15 +49,22 @@ const messages: Record<Locale, Dict> = {
     runAtStartup:   'Run at Windows startup',
     startMinimized: 'Start minimized to tray',
 
-    // Settings — services
-    ports:          'Ports',
-    nginxWeb:       'Nginx (web)',
-    mariadb:        'MariaDB',
-    redis:          'Redis',
-    startOnLaunch:  'Start on launch',
-    nginx:          'Nginx',
-    phpCgi:         'PHP-CGI',
-    openConfigDir:  'Open config folder',
+     // Settings — services
+     ports:          'Ports',
+     nginxWeb:       'Nginx (web)',
+     mariadb:        'MariaDB',
+     redis:          'Redis',
+     startOnLaunch:  'Start on launch',
+     nginx:          'Nginx',
+     phpCgi:         'PHP-CGI',
+     openConfigDir:  'Open config folder',
+     // Settings — PHP
+      tabPhp:         'PHP',
+      phpSettings:    'PHP Settings',
+     phpVersion:     'PHP Version',
+     phpCgiPort:     'PHP-CGI Port',
+     openPhpIni:     'Open php.ini',
+     phpHint:        'PHP is managed by Nginx; version and port are informational.',
 
     // Settings — footer
     close:          'Close',
@@ -81,6 +89,7 @@ const messages: Record<Locale, Dict> = {
     running:        'Đang chạy',
     stopped:        'Đã dừng',
     openSite:       'Mở trang web',
+    openAdminer:    'Adminer',
     siteFolder:     'Thư mục web',
     logsFolder:     'Nhật ký',
 

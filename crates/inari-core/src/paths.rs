@@ -71,6 +71,12 @@ impl InariPaths {
         self.mysql.join("bin").join("mysqladmin.exe")
     }
 
+    /// Bundled Adminer single-file PHP app, exposed by generated nginx config
+    /// at /_inari/adminer.php when present.
+    pub fn adminer_php(&self) -> PathBuf {
+        self.runtime.join("adminer").join("adminer.php")
+    }
+
     // --- runtime paths ---
 
     pub fn nginx_conf(&self) -> PathBuf {

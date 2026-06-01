@@ -101,6 +101,7 @@ pub fn generate_nginx_conf(paths: &InariPaths, config: &InariConfig) -> Result<(
         .replace("{nginx_dir}", &fwd(&paths.nginx))
         .replace("{logs_dir}",  &fwd(&paths.logs))
         .replace("{site_root}", &fwd(&site_root))
+        .replace("{adminer_php}", &fwd(&paths.adminer_php()))
         .replace("{web_port}",  &config.ports.web.to_string());
 
     fs::write(paths.nginx_conf(), conf)
@@ -222,6 +223,21 @@ http {
         root "{site_root}";
         index index.php index.html;
 
+        # Front-controller friendly fallback for Laravel and other PHP apps.
+        # Static files are served directly; unknown routes fall through to index.php.
+        location / {
+            try_files $uri $uri/ /index.php?$query_string;
+        }
+
+        # Bundled Adminer shortcut. This keeps the user's web root clean while
+        # making the database UI available whenever runtime/adminer/adminer.php
+        # is included in the portable bundle.
+        location = /_inari/adminer.php {
+            fastcgi_pass 127.0.0.1:9000;
+            fastcgi_param SCRIPT_FILENAME "{adminer_php}";
+            include "{nginx_dir}/conf/fastcgi_params";
+        }
+
         location ~ \.php$ {
             fastcgi_pass 127.0.0.1:9000;
             fastcgi_index index.php;
@@ -280,7 +296,11 @@ opcache.revalidate_freq = 0
 /// (hard-killing mysqld forces crash recovery and risks datadir corruption);
 /// all other services are killed directly. Returns true if a stop was issued.
 pub fn stop_service(paths: &InariPaths, kind: &ServiceKind, port: u16) -> bool {
-    use sysinfo::{Pid, ProcessesToUpdate, System};
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+
+    if *kind == ServiceKind::Nginx {
+        return stop_nginx_processes(paths);
+    }
 
     if *kind == ServiceKind::Mysql {
         let admin = paths.mysqladmin_exe();
@@ -303,19 +323,73 @@ pub fn stop_service(paths: &InariPaths, kind: &ServiceKind, port: u16) -> bool {
         }
     }
 
-    // Fallback / non-mysql: hard kill via PID.
+    // Fallback / non-mysql: hard kill via PID — but only if the recorded PID
+    // still belongs to *our* service. Windows recycles PIDs, so killing a bare
+    // PID from a stale file could take down an unrelated process.
     if let Some(pid) = std::fs::read_to_string(paths.pid_file(kind.name()))
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
     {
         let mut sys = System::new();
-        sys.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), false);
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+            false,
+            ProcessRefreshKind::new().with_exe(UpdateKind::Always),
+        );
         if let Some(proc) = sys.process(Pid::from_u32(pid)) {
-            proc.kill();
-            return true;
+            let matches = proc
+                .exe()
+                .and_then(|p| p.file_name())
+                .map(|n| n.eq_ignore_ascii_case(kind.exe_file_name()))
+                .unwrap_or(true);
+            if matches {
+                proc.kill();
+                return true;
+            }
         }
     }
     false
+}
+
+/// Stop every nginx process that belongs to this Inari instance. nginx on
+/// Windows can leave a master/worker pair behind, and tracking only one PID lets
+/// an orphan keep the web port bound while Inari thinks a different PID is live.
+#[cfg(windows)]
+fn stop_nginx_processes(paths: &InariPaths) -> bool {
+    let nginx_exe = paths.nginx_exe().to_string_lossy().to_ascii_lowercase();
+    let nginx_conf = paths.nginx_conf().to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    let nginx_root = paths.nginx.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+
+    let script = format!(
+        "$exe = '{}'; $conf = '{}'; $root = '{}'; \
+         $procs = Get-CimInstance Win32_Process -Filter \"Name = 'nginx.exe'\" | Where-Object {{ \
+         $_.ExecutablePath -and ($_.ExecutablePath.ToLowerInvariant() -eq $exe) -and \
+         $_.CommandLine -and (($normalized = $_.CommandLine.Replace('\\','/').ToLowerInvariant()).Contains($conf)) -and \
+         $normalized.Contains($root) }}; \
+         $count = 0; foreach ($p in $procs) {{ Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue; $count++ }}; $count",
+        ps_single_quote(&nginx_exe),
+        ps_single_quote(&nginx_conf),
+        ps_single_quote(&nginx_root),
+    );
+
+    std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .map(|count| count > 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(windows))]
+fn stop_nginx_processes(_paths: &InariPaths) -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn ps_single_quote(value: &str) -> String {
+    value.replace('\'', "''")
 }
 
 /// Poll until a PID is gone (max ~3s). Used by restart so the port is released

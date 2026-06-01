@@ -17,7 +17,14 @@ fn load_config() -> (InariPaths, InariConfig) {
 
 fn start_panel(paths: InariPaths, config: InariConfig, port: u16) {
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        // Multi-threaded (small pool) on purpose: the control handlers do
+        // blocking work — spawning service processes, waiting for a clean exit,
+        // MariaDB datadir init, post-spawn liveness checks. On a current-thread
+        // runtime any one of those would freeze the whole panel (status polls
+        // included) until it finished. A couple of workers keep the UI
+        // responsive while a start/stop/restart is in flight.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .build()
             .expect("panel runtime");
@@ -76,10 +83,10 @@ pub fn run() {
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu   = Menu::with_items(app, &[&show_i, &hide_i, &quit_i])?;
 
-            // menu_on_left_click(false): left = toggle window, right = menu (Tauri default).
+            // show_menu_on_left_click(false): left = toggle window, right = menu (Tauri default).
             let mut tray = TrayIconBuilder::new()
                 .menu(&menu)
-                .menu_on_left_click(false)
+                .show_menu_on_left_click(false)
                 .tooltip("Inari — SushiBox");
             // Use the app's bundled icon for the tray (not set automatically).
             if let Some(icon) = app.default_window_icon().cloned() {
