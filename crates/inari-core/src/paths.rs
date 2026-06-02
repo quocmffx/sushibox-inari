@@ -77,6 +77,11 @@ impl InariPaths {
         self.runtime.join("adminer").join("adminer.php")
     }
 
+    /// Bundled Adminer directory, used as nginx alias root for /_inari/.
+    pub fn adminer_dir(&self) -> PathBuf {
+        self.runtime.join("adminer")
+    }
+
     // --- runtime paths ---
 
     pub fn nginx_conf(&self) -> PathBuf {

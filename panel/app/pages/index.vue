@@ -5,6 +5,7 @@ interface Service {
   version: string
   state: 'running' | 'stopped'
   pid: number | null
+  port: number
 }
 interface Config {
   flavor: string
@@ -35,7 +36,7 @@ const themeOptions = computed(() => [
 const { data: status, refresh, pending, error } = await useFetch<{ services: Service[] }>('/api/status', {
   default: () => ({ services: [] }),
 })
-const { data: config } = await useFetch<Config>('/api/config', {
+const { data: config, refresh: refreshConfig } = await useFetch<Config>('/api/config', {
   default: () => ({ flavor: 'default', ports: {}, sites: [] }),
 })
 
@@ -79,8 +80,16 @@ interface ServerSettings {
   run_at_startup?: boolean
   start_minimized?: boolean
 }
+interface SaveSettingsResponse {
+  ok: boolean
+  note?: string
+  error?: string
+  settings?: ServerSettings
+  config?: Config
+}
 const settingsTab = ref<'general' | 'services' | 'php'>('general')
 const savingSettings = ref(false)
+const settingsNotice = ref<{ text: string; ok: boolean } | null>(null)
 // Editable form models (seeded from /api/config effective values)
 const portWeb = ref<number>(8080)
 const portMysql = ref<number>(3307)
@@ -91,24 +100,35 @@ const runAtStartup = ref<boolean>(false)
 const startMinimized = ref<boolean>(false)
 
 async function loadServerSettings() {
-  // Seed ports/root from effective config (flavor + overlay)
-  portWeb.value = config.value?.ports?.web ?? 8080
-  portMysql.value = config.value?.ports?.mysql ?? 3307
-  portRedis.value = config.value?.ports?.redis ?? 6380
-  docRoot.value = config.value?.sites?.[0]?.root ?? 'sites/default'
-  // Seed autostart from saved settings
+  // Pull fresh effective config first so Settings and the home page never drift.
+  await refreshConfig()
   try {
     const s = await $fetch<ServerSettings>('/api/settings')
+
+    // Seed editable fields from persisted settings when present; otherwise use
+    // the effective config (flavor + overlay) returned by /api/config.
+    portWeb.value = s.ports?.web ?? config.value?.ports?.web ?? 8080
+    portMysql.value = s.ports?.mysql ?? config.value?.ports?.mysql ?? 3307
+    portRedis.value = s.ports?.redis ?? config.value?.ports?.redis ?? 6380
+    docRoot.value = s.sites?.[0]?.root ?? config.value?.sites?.[0]?.root ?? 'sites/default'
+
     const set = new Set(s.autostart ?? [])
     for (const k of Object.keys(autostartKinds.value)) autostartKinds.value[k] = set.has(k)
     runAtStartup.value = s.run_at_startup ?? false
     startMinimized.value = s.start_minimized ?? false
   }
-  catch { /* ignore */ }
+  catch {
+    // Fallback to effective config if settings.json cannot be read.
+    portWeb.value = config.value?.ports?.web ?? 8080
+    portMysql.value = config.value?.ports?.mysql ?? 3307
+    portRedis.value = config.value?.ports?.redis ?? 6380
+    docRoot.value = config.value?.sites?.[0]?.root ?? 'sites/default'
+  }
 }
 
 async function saveServerSettings() {
   savingSettings.value = true
+  settingsNotice.value = null
   const autostart = Object.entries(autostartKinds.value)
     .filter(([, on]) => on)
     .map(([k]) => k)
@@ -120,16 +140,38 @@ async function saveServerSettings() {
     start_minimized: startMinimized.value,
   }
   try {
-    const res = await $fetch<{ ok: boolean; note?: string; error?: string }>('/api/settings', { method: 'POST', body })
+    const res = await $fetch<SaveSettingsResponse>('/api/settings', { method: 'POST', body })
     if (res.ok) {
-      pushMessage(res.note ?? t('settingsSaved'), true)
+      const msg = res.note ?? t('settingsSaved')
+      settingsNotice.value = { text: msg, ok: true }
+      pushMessage(msg, true)
+
+      // The save response is authoritative. Apply it immediately so Settings
+      // and the home card cannot disagree while Nuxt's useFetch cache catches up.
+      if (res.config) config.value = res.config
+      if (res.settings) {
+        portWeb.value = res.settings.ports?.web ?? config.value?.ports?.web ?? 8080
+        portMysql.value = res.settings.ports?.mysql ?? config.value?.ports?.mysql ?? 3307
+        portRedis.value = res.settings.ports?.redis ?? config.value?.ports?.redis ?? 6380
+        docRoot.value = res.settings.sites?.[0]?.root ?? config.value?.sites?.[0]?.root ?? 'sites/default'
+        const set = new Set(res.settings.autostart ?? [])
+        for (const k of Object.keys(autostartKinds.value)) autostartKinds.value[k] = set.has(k)
+        runAtStartup.value = res.settings.run_at_startup ?? false
+        startMinimized.value = res.settings.start_minimized ?? false
+      }
+
+      await refreshConfig()
       await refresh()
     } else {
-      pushMessage(`${t('settings')}: ${res.error ?? t('saveFailed')}`, false)
+      const msg = `${t('settings')}: ${res.error ?? t('saveFailed')}`
+      settingsNotice.value = { text: msg, ok: false }
+      pushMessage(msg, false)
     }
   }
   catch (e: any) {
-    pushMessage(`${t('settings')}: ${e?.data?.error ?? t('saveFailed')}`, false)
+    const msg = `${t('settings')}: ${e?.data?.error ?? t('saveFailed')}`
+    settingsNotice.value = { text: msg, ok: false }
+    pushMessage(msg, false)
   }
   finally {
     savingSettings.value = false
@@ -137,15 +179,11 @@ async function saveServerSettings() {
 }
 
 function openSettings() {
+  settingsNotice.value = null
   loadServerSettings()
   settingsOpen.value = true
 }
 
-const servicePort = (kind: string): number | undefined => ({
-  nginx: config.value?.ports?.web,
-  mysql: config.value?.ports?.mysql,
-  redis: config.value?.ports?.redis,
-} as Record<string, number | undefined>)[kind]
 const phpVersion = computed(() => config.value?.php?.version ?? '8.4.21')
 const phpCgiPort = computed(() => config.value?.php?.cgi_port ?? 9000)
 
@@ -284,7 +322,7 @@ const openTarget = async (target: string, label: string) => {
                 <span class="text-[10px] font-normal text-dimmed">{{ svc.version }}</span>
               </p>
               <p class="text-[10px] font-mono text-dimmed leading-tight">
-                :{{ servicePort(svc.kind) }}<span v-if="svc.kind === 'nginx'"> · PHP {{ phpVersion }}</span><span v-if="svc.pid"> · {{ svc.pid }}</span>
+                :{{ svc.port }}<span v-if="svc.kind === 'nginx'"> · PHP {{ phpVersion }}</span><span v-if="svc.pid"> · {{ svc.pid }}</span>
               </p>
             </div>
             <!-- Stopped: single Start. Running: Stop + Restart as quiet icons. -->
@@ -400,6 +438,14 @@ const openTarget = async (target: string, label: string) => {
 
         <!-- Body -->
         <div class="flex-1 overflow-y-auto p-3 text-sm">
+          <div
+            v-if="settingsNotice"
+            class="mb-3 rounded-md border px-2 py-1.5 text-[11px] leading-snug"
+            :class="settingsNotice.ok ? 'border-primary/30 bg-primary/10 text-primary' : 'border-error/30 bg-error/10 text-error'"
+          >
+            {{ settingsNotice.text }}
+          </div>
+
           <!-- Tabs -->
           <div class="flex gap-1 mb-3 bg-elevated/50 rounded-md p-0.5">
             <button

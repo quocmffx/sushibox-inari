@@ -344,6 +344,7 @@ async fn api_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // stale PID files, so the panel can never disagree with the CLI.
     let statuses = state::statuses(&state.paths, ServiceKind::public(), |_| true);
 
+    let config = state.config.lock().unwrap().clone();
     let services: Vec<_> = statuses
         .iter()
         .map(|(kind, status)| {
@@ -357,6 +358,7 @@ async fn api_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 "version": kind.version(),
                 "state":   if running { "running" } else { "stopped" },
                 "pid":     pid,
+                "port":    service_port(kind, &config),
             })
         })
         .collect();
@@ -366,23 +368,7 @@ async fn api_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 async fn api_config(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let config = state.config.lock().unwrap();
-    axum::Json(json!({
-        "flavor": config.flavor,
-        "ports": {
-            "panel": config.ports.panel,
-            "web":   config.ports.web,
-            "mysql": config.ports.mysql,
-            "redis": config.ports.redis,
-        },
-        "php": {
-            "version": ServiceKind::Php.version(),
-            "cgi_port": 9000,
-        },
-        "sites": config.sites.iter().map(|s| json!({
-            "name": s.name,
-            "root": s.root,
-        })).collect::<Vec<_>>(),
-    }))
+    axum::Json(config_json(&config))
 }
 
 // ---------------------------------------------------------------------------
@@ -427,7 +413,14 @@ async fn api_set_settings(
     if let Err(e) = inari_core::startup::apply(settings.run_at_startup) {
         tracing::warn!("run_at_startup apply failed: {e}");
     }
-    axum::Json(json!({"ok": true, "note": note}))
+    let saved = Settings::load(&state.paths.data);
+    let config = state.config.lock().unwrap();
+    axum::Json(json!({
+        "ok": true,
+        "note": note,
+        "settings": saved,
+        "config": config_json(&config),
+    }))
 }
 
 async fn api_activity(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -526,6 +519,26 @@ fn parse_kind(s: &str) -> Option<ServiceKind> {
         "redis" => Some(ServiceKind::Redis),
         _       => None,
     }
+}
+
+fn config_json(config: &InariConfig) -> serde_json::Value {
+    json!({
+        "flavor": config.flavor,
+        "ports": {
+            "panel": config.ports.panel,
+            "web":   config.ports.web,
+            "mysql": config.ports.mysql,
+            "redis": config.ports.redis,
+        },
+        "php": {
+            "version": ServiceKind::Php.version(),
+            "cgi_port": 9000,
+        },
+        "sites": config.sites.iter().map(|s| json!({
+            "name": s.name,
+            "root": s.root,
+        })).collect::<Vec<_>>(),
+    })
 }
 
 /// Port a service listens on, from config (php-cgi is fixed at 9000).

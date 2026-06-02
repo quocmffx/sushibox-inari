@@ -101,6 +101,7 @@ pub fn generate_nginx_conf(paths: &InariPaths, config: &InariConfig) -> Result<(
         .replace("{nginx_dir}", &fwd(&paths.nginx))
         .replace("{logs_dir}",  &fwd(&paths.logs))
         .replace("{site_root}", &fwd(&site_root))
+        .replace("{adminer_dir}", &fwd(&paths.adminer_dir()))
         .replace("{adminer_php}", &fwd(&paths.adminer_php()))
         .replace("{web_port}",  &config.ports.web.to_string());
 
@@ -230,12 +231,17 @@ http {
         }
 
         # Bundled Adminer shortcut. This keeps the user's web root clean while
-        # making the database UI available whenever runtime/adminer/adminer.php
-        # is included in the portable bundle.
-        location = /_inari/adminer.php {
-            fastcgi_pass 127.0.0.1:9000;
-            fastcgi_param SCRIPT_FILENAME "{adminer_php}";
-            include "{nginx_dir}/conf/fastcgi_params";
+        # making the database UI available whenever runtime/adminer/ is included
+        # in the portable bundle. The Inari wrapper pre-fills default credentials.
+        location /_inari/ {
+            alias "{adminer_dir}/";
+            index index.php;
+            location ~ \.php$ {
+                fastcgi_pass 127.0.0.1:9000;
+                fastcgi_index index.php;
+                fastcgi_param SCRIPT_FILENAME $request_filename;
+                include "{nginx_dir}/conf/fastcgi_params";
+            }
         }
 
         location ~ \.php$ {

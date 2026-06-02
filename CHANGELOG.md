@@ -2,6 +2,23 @@
 
 All notable changes to Inari are documented here.
 
+## v0.1.0-beta.4 — 2026-06-02
+
+State sync and smoke-test hardening.
+
+- Normalized Settings state: `/api/settings` now returns the persisted settings
+  and effective config after save, while `/api/status` includes authoritative
+  service ports.
+- Updated the panel to apply backend save responses immediately, refresh config
+  and status, and show save success/error notices inside the Settings overlay.
+- Fixed the Adminer nginx alias by replacing `{adminer_dir}` correctly and made
+  Adminer packaging reproducible through `package-portable.ps1`.
+- Added an Inari Adminer wrapper for local dev defaults (`127.0.0.1:3307`,
+  `root`, empty password) and patched Adminer 4.8.1's PHP 8 null-offset warning.
+- Added `scripts/smoke-desktop.ps1` to verify desktop bundles end-to-end:
+  settings/config/status sync, service start, web response, and Adminer response.
+- Updated portable packaging to include release-check and smoke scripts.
+
 ## v0.1.0-beta.3 — 2026-06-02
 
 Reliability and Laravel dev polish.

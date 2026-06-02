@@ -83,6 +83,58 @@ foreach ($c in $components) {
     }
 }
 
+# --- 4a. Adminer dev bootstrap --------------------------------------------
+# Adminer is shipped as a downloaded single-file PHP app. For Inari we wrap it
+# so the bundled local MariaDB is preselected (127.0.0.1:3307 / root / empty
+# password), and patch a PHP 8 warning string Adminer 4.8.1 does not suppress.
+$adminerOut = Join-Path $runtimeOut 'adminer'
+if (Test-Path $adminerOut) {
+    $adminerPhp  = Join-Path $adminerOut 'adminer.php'
+    $adminerCore = Join-Path $adminerOut 'adminer-core.php'
+
+    if ((Test-Path $adminerPhp) -and (-not (Test-Path $adminerCore))) {
+        Move-Item $adminerPhp $adminerCore -Force
+    }
+
+    if (Test-Path $adminerCore) {
+        $core = Get-Content $adminerCore -Raw
+        $core = $core -replace 'Trying to access array offset on value of type null\|Undefined array key', 'Trying to access array offset on (value of type )?null|Undefined array key'
+        [System.IO.File]::WriteAllText($adminerCore, $core, (New-Object System.Text.UTF8Encoding($false)))
+
+        $wrapper = @'
+<?php
+/** Inari Adminer wrapper.
+ * Local-only dev defaults for the bundled MariaDB:
+ *   server: 127.0.0.1:3307
+ *   user:   root
+ *   pass:   empty
+ */
+function adminer_object() {
+    class AdminerInari extends Adminer {
+        function credentials() {
+            return array('127.0.0.1:3307', 'root', '');
+        }
+
+        function login($login, $password) {
+            return ($login === 'root');
+        }
+    }
+    return new AdminerInari;
+}
+
+$_GET['server'] = $_GET['server'] ?? '127.0.0.1:3307';
+$_GET['username'] = $_GET['username'] ?? 'root';
+$_GET['db'] = $_GET['db'] ?? '';
+$_REQUEST['server'] = $_GET['server'];
+$_REQUEST['username'] = $_GET['username'];
+$_REQUEST['db'] = $_GET['db'];
+require __DIR__ . '/adminer-core.php';
+'@
+        [System.IO.File]::WriteAllText($adminerPhp, $wrapper, (New-Object System.Text.UTF8Encoding($false)))
+        Say "Adminer wrapper prepared for Inari defaults" 'Green'
+    }
+}
+
 # --- 4b. Prune the shipped runtime (source runtime/ stays intact) ----------
 # The win is MySQL: portable MariaDB ships debug symbols, dev link libs, a
 # template datadir, backup tooling, and ~25 maintenance CLIs a dev runtime
@@ -156,7 +208,12 @@ foreach ($f in @('LICENSE', 'THIRD_PARTY.md')) {
 }
 
 New-Item -ItemType Directory -Path (Join-Path $OutDir 'scripts') -Force | Out-Null
-Copy-Item (Join-Path $RepoRoot 'scripts\fetch-runtime.ps1') (Join-Path $OutDir 'scripts\fetch-runtime.ps1') -Force
+foreach ($scriptName in @('fetch-runtime.ps1', 'release-check.ps1', 'smoke-desktop.ps1')) {
+    $scriptPath = Join-Path $RepoRoot ("scripts\{0}" -f $scriptName)
+    if (Test-Path $scriptPath) {
+        Copy-Item $scriptPath (Join-Path $OutDir ("scripts\{0}" -f $scriptName)) -Force
+    }
+}
 
 $siteSrc = Join-Path $RepoRoot 'sites\default'
 $siteOut = Join-Path $OutDir 'sites\default'
