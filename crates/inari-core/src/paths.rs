@@ -104,6 +104,11 @@ impl InariPaths {
     pub fn default_flavor(&self) -> PathBuf {
         self.flavors.join("default.lua")
     }
+
+    /// Path to a named flavor file (flavors/<name>.lua).
+    pub fn flavor(&self, name: &str) -> PathBuf {
+        self.flavors.join(format!("{name}.lua"))
+    }
 }
 
 /// Expand a Windows 8.3 short path to its long form via GetLongPathNameW.

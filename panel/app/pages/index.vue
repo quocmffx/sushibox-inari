@@ -258,6 +258,65 @@ const openTarget = async (target: string, label: string) => {
     pushMessage(`${label}: ${e?.data?.error ?? t('actionFailed')}`, false)
   }
 }
+
+// ── AI / MCP server — start/stop an MCP endpoint for an AI agent ────────
+interface McpStatus { running: boolean; port: number; url: string }
+interface McpActionResponse { ok: boolean; port?: number; url?: string; error?: string }
+const mcpOn = ref(false)
+const mcpUrl = ref('')
+const mcpPending = ref(false)
+const mcpCopied = ref(false)
+
+async function loadMcp() {
+  try {
+    const s = await $fetch<McpStatus>('/api/mcp')
+    mcpOn.value = s.running
+    mcpUrl.value = s.url ?? ''
+  } catch { /* backend unreachable — leave toggle off */ }
+}
+onMounted(loadMcp)
+
+async function toggleMcp(on: boolean) {
+  // Optimistic flip; revert on failure.
+  mcpPending.value = true
+  try {
+    if (on) {
+      const res = await $fetch<McpActionResponse>('/api/mcp/start', { method: 'POST' })
+      if (res.ok) {
+        mcpOn.value = true
+        mcpUrl.value = res.url ?? ''
+        pushMessage(`${t('mcpStarted')}${res.url ? ` · ${res.url}` : ''}`, true)
+      } else {
+        mcpOn.value = false
+        pushMessage(`${t('mcpFailed')}: ${res.error ?? t('actionFailed')}`, false)
+      }
+    } else {
+      const res = await $fetch<McpActionResponse>('/api/mcp/stop', { method: 'POST' })
+      if (res.ok) {
+        mcpOn.value = false
+        mcpUrl.value = ''
+        pushMessage(t('mcpStopped'), true)
+      } else {
+        mcpOn.value = true
+        pushMessage(`${t('mcpFailed')}: ${res.error ?? t('actionFailed')}`, false)
+      }
+    }
+  } catch (e: any) {
+    mcpOn.value = !on
+    pushMessage(`${t('mcpFailed')}: ${e?.data?.error ?? e?.message ?? t('requestFailed')}`, false)
+  } finally {
+    mcpPending.value = false
+  }
+}
+
+async function copyMcpUrl() {
+  if (!mcpUrl.value) return
+  try {
+    await navigator.clipboard.writeText(mcpUrl.value)
+    mcpCopied.value = true
+    setTimeout(() => { mcpCopied.value = false }, 1200)
+  } catch { /* clipboard blocked — ignore */ }
+}
 </script>
 
 <template>
@@ -376,6 +435,36 @@ const openTarget = async (target: string, label: string) => {
           </div>
         </template>
       </UCard>
+
+      <!-- AI / MCP — start an MCP endpoint an AI agent can drive the stack with. -->
+      <div class="rounded-lg border border-default bg-muted/40 px-3 py-2">
+        <div class="flex items-center gap-2.5">
+          <UIcon name="i-lucide-bot" class="size-4 text-muted shrink-0" />
+          <div class="flex-1 min-w-0">
+            <p class="text-xs font-medium text-highlighted leading-tight">{{ t('aiMcp') }}</p>
+            <p class="text-[10px] text-muted leading-tight">{{ t('aiMcpHint') }}</p>
+          </div>
+          <USwitch
+            v-model="mcpOn"
+            size="sm"
+            :loading="mcpPending"
+            :disabled="mcpPending"
+            @update:model-value="toggleMcp"
+          />
+        </div>
+        <div
+          v-if="mcpOn && mcpUrl"
+          class="mt-2 flex items-center gap-1.5 pl-6"
+        >
+          <code class="text-[10px] font-mono text-dimmed truncate">{{ mcpUrl }}</code>
+          <UButton
+            :icon="mcpCopied ? 'i-lucide-check' : 'i-lucide-copy'"
+            color="neutral" variant="ghost" size="xs"
+            :aria-label="t('copy')" :title="mcpCopied ? t('copied') : t('copy')"
+            @click="copyMcpUrl"
+          />
+        </div>
+      </div>
 
       <!-- Dev shortcuts — turn the demo/test loop into buttons, no terminal. -->
       <div class="grid grid-cols-4 gap-1.5">

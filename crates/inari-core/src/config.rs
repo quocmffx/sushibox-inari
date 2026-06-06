@@ -7,6 +7,11 @@ pub struct InariConfig {
     pub sites:          Vec<SiteConfig>,
     pub nginx_template: Option<String>,
     pub hooks:          HookConfig,
+    /// Root password for graceful `mysqladmin shutdown`. None = passwordless root.
+    /// Set by flavors whose root has a password (e.g. the KTM SDK uses 123456),
+    /// otherwise stop would kill mysqld and force crash recovery.
+    #[serde(default)]
+    pub mysql_password: Option<String>,
 }
 
 impl Default for InariConfig {
@@ -21,6 +26,7 @@ impl Default for InariConfig {
             }],
             nginx_template: None,
             hooks: HookConfig::default(),
+            mysql_password: None,
         }
     }
 }

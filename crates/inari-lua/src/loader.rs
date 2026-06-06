@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 use inari_core::config::{HookConfig, InariConfig, PortConfig, SiteConfig};
+use inari_core::paths::InariPaths;
+use inari_core::settings::Settings;
 use mlua::prelude::*;
 use std::path::Path;
 use tracing::debug;
@@ -54,6 +56,12 @@ pub fn load_flavor(path: &Path) -> Result<InariConfig> {
     // optional nginx template string
     let nginx_template: Option<String> = globals.get::<String>("nginx_template").ok();
 
+    // optional root password for graceful mysqladmin shutdown
+    let mysql_password: Option<String> = globals
+        .get::<String>("mysql_password")
+        .ok()
+        .filter(|s| !s.is_empty());
+
     // hooks
     let hooks = globals
         .get::<LuaTable>("hooks")
@@ -65,7 +73,29 @@ pub fn load_flavor(path: &Path) -> Result<InariConfig> {
 
     debug!("Loaded flavor '{}' with {} site(s)", flavor, sites.len());
 
-    Ok(InariConfig { flavor, ports, sites, nginx_template, hooks })
+    Ok(InariConfig { flavor, ports, sites, nginx_template, hooks, mysql_password })
+}
+
+/// Load the active flavor named in settings.json (`flavors/<name>.lua`), falling
+/// back to `default.lua` and then to the built-in default config.
+pub fn load_active_flavor(paths: &InariPaths) -> InariConfig {
+    let name = Settings::load(&paths.data)
+        .flavor
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "default".to_string());
+    let candidate = paths.flavor(&name);
+    let path = if candidate.exists() {
+        candidate
+    } else {
+        paths.default_flavor()
+    };
+    if path.exists() {
+        match load_flavor(&path) {
+            Ok(cfg) => return cfg,
+            Err(e) => tracing::warn!("Failed to load flavor {:?}: {e}", path),
+        }
+    }
+    InariConfig::default()
 }
 
 fn read_string_seq(table: &LuaTable, key: &str) -> Vec<String> {

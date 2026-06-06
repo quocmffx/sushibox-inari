@@ -17,6 +17,9 @@ use crate::config::{InariConfig, SiteConfig};
 /// Persisted, GUI-editable overrides. All fields optional → absent = use flavor.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
+    /// Active flavor name (loads flavors/<name>.lua). None/absent = "default".
+    #[serde(default)]
+    pub flavor: Option<String>,
     #[serde(default)]
     pub ports: PortOverrides,
     /// If Some, replaces the flavor site list entirely.

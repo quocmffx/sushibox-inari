@@ -21,6 +21,15 @@ const messages: Record<Locale, Dict> = {
     siteFolder:     'Site folder',
     logsFolder:     'Logs',
 
+    // AI / MCP
+    aiMcp:          'AI / MCP',
+    aiMcpHint:      'Control server for AI',
+    copy:           'Copy',
+    copied:         'Copied',
+    mcpStarted:     'AI / MCP — started',
+    mcpStopped:     'AI / MCP — stopped',
+    mcpFailed:      'AI / MCP failed',
+
     // Header / misc
     cannotReachApi: 'Cannot reach the backend',
     refresh:        'Refresh',
@@ -92,6 +101,14 @@ const messages: Record<Locale, Dict> = {
     openAdminer:    'Adminer',
     siteFolder:     'Thư mục web',
     logsFolder:     'Nhật ký',
+
+    aiMcp:          'AI / MCP',
+    aiMcpHint:      'Server điều khiển cho AI',
+    copy:           'Sao chép',
+    copied:         'Đã sao chép',
+    mcpStarted:     'AI / MCP — đã bật',
+    mcpStopped:     'AI / MCP — đã tắt',
+    mcpFailed:      'AI / MCP lỗi',
 
     cannotReachApi: 'Không kết nối được backend',
     refresh:        'Làm mới',

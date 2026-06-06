@@ -7,11 +7,7 @@ use tauri::{
 
 fn load_config() -> (InariPaths, InariConfig) {
     let paths = InariPaths::from_exe().expect("Cannot resolve exe path");
-    let config = if paths.default_flavor().exists() {
-        inari_lua::load_flavor(&paths.default_flavor()).unwrap_or_default()
-    } else {
-        InariConfig::default()
-    };
+    let config = inari_lua::load_active_flavor(&paths);
     (paths, config)
 }
 

@@ -301,7 +301,12 @@ opcache.revalidate_freq = 0
 /// Stop a service by PID. MariaDB gets a graceful `mysqladmin shutdown` first
 /// (hard-killing mysqld forces crash recovery and risks datadir corruption);
 /// all other services are killed directly. Returns true if a stop was issued.
-pub fn stop_service(paths: &InariPaths, kind: &ServiceKind, port: u16) -> bool {
+pub fn stop_service(
+    paths: &InariPaths,
+    kind: &ServiceKind,
+    port: u16,
+    mysql_password: Option<&str>,
+) -> bool {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
     if *kind == ServiceKind::Nginx {
@@ -311,14 +316,22 @@ pub fn stop_service(paths: &InariPaths, kind: &ServiceKind, port: u16) -> bool {
     if *kind == ServiceKind::Mysql {
         let admin = paths.mysqladmin_exe();
         if admin.exists() {
+            let mut args = vec![
+                "--protocol=tcp".to_string(),
+                "--host=127.0.0.1".to_string(),
+                format!("--port={port}"),
+                "--user=root".to_string(),
+            ];
+            // If root has a password (e.g. the KTM flavor sets 123456 for the
+            // SDK), pass it so the graceful shutdown authenticates. Without it
+            // mysqladmin fails and we fall back to killing mysqld — which forces
+            // InnoDB crash recovery on the next start.
+            if let Some(pw) = mysql_password.filter(|p| !p.is_empty()) {
+                args.push(format!("--password={pw}"));
+            }
+            args.push("shutdown".to_string());
             let ok = std::process::Command::new(&admin)
-                .args([
-                    "--protocol=tcp".to_string(),
-                    "--host=127.0.0.1".to_string(),
-                    format!("--port={port}"),
-                    "--user=root".to_string(),
-                    "shutdown".to_string(),
-                ])
+                .args(&args)
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false);

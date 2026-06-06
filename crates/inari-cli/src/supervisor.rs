@@ -4,7 +4,6 @@ use inari_core::{
     process::{ServiceDescriptor, ServiceKind, ServiceStatus},
     state,
 };
-use tracing::warn;
 
 // Shared runtime logic now lives in inari-core; re-export so existing
 // CLI call sites (start.rs, status.rs) keep importing from supervisor.
@@ -15,14 +14,7 @@ pub use inari_core::runtime::{build_descriptors, generate_nginx_conf, generate_p
 // ---------------------------------------------------------------------------
 
 pub fn load_config(paths: &InariPaths) -> InariConfig {
-    let flavor_path = paths.default_flavor();
-    if flavor_path.exists() {
-        match inari_lua::load_flavor(&flavor_path) {
-            Ok(cfg) => return cfg,
-            Err(e)  => warn!("Failed to load flavor: {e}; using defaults"),
-        }
-    }
-    InariConfig::default()
+    inari_lua::load_active_flavor(paths)
 }
 
 // ---------------------------------------------------------------------------

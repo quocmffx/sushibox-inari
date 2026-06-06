@@ -20,7 +20,10 @@ use inari_core::{
 use mime_guess::from_path;
 use rust_embed::RustEmbed;
 use serde_json::json;
+use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
+
+mod mcp;
 
 /// Grace period after spawn before trusting a service as "up" (see start.rs).
 const LIVENESS_GRACE_MS: u64 = 400;
@@ -46,6 +49,8 @@ struct AppState {
     base:     InariConfig,
     activity: Mutex<VecDeque<String>>,
     job:      Option<JobObject>,
+    /// Shutdown sender for the optional MCP server (None = not running).
+    mcp:      Mutex<Option<oneshot::Sender<()>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +68,7 @@ pub async fn start_server(port: u16, paths: InariPaths, config: InariConfig) -> 
         base: config,
         activity: Mutex::new(VecDeque::with_capacity(50)),
         job: JobObject::new().ok(),
+        mcp: Mutex::new(None),
     });
 
     let app = Router::new()
@@ -74,6 +80,9 @@ pub async fn start_server(port: u16, paths: InariPaths, config: InariConfig) -> 
         .route("/api/services/:kind/stop",    post(api_service_stop))
         .route("/api/services/:kind/restart", post(api_service_restart))
         .route("/api/open/:target", post(api_open))
+        .route("/api/mcp", get(api_mcp_status))
+        .route("/api/mcp/start", post(api_mcp_start))
+        .route("/api/mcp/stop", post(api_mcp_stop))
         .fallback(static_handler)
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -184,8 +193,11 @@ fn stop_service_inner(kind: &ServiceKind, state: &AppState) -> Result<(), String
         remove_pid(&state.paths, kind);
         return Err("not running".to_string());
     }
-    let port = service_port(kind, &state.config.lock().unwrap());
-    stop_service(&state.paths, kind, port);
+    let (port, mysql_password) = {
+        let cfg = state.config.lock().unwrap();
+        (service_port(kind, &cfg), cfg.mysql_password.clone())
+    };
+    stop_service(&state.paths, kind, port, mysql_password.as_deref());
     wait_for_exit(pid, 5000);
     remove_pid(&state.paths, kind);
     Ok(())
@@ -333,6 +345,36 @@ async fn api_service_restart(
     } else {
         axum::Json(json!({"ok": false, "error": msg}))
     }
+}
+
+// ---------------------------------------------------------------------------
+// API — MCP server toggle (AI control)
+// ---------------------------------------------------------------------------
+
+async fn api_mcp_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    axum::Json(json!({
+        "running": mcp::is_running(&state),
+        "port": mcp::MCP_PORT,
+        "url": mcp::mcp_url(),
+    }))
+}
+
+async fn api_mcp_start(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match mcp::start(state.clone()).await {
+        Ok(port) => {
+            push_activity(&state, format!("MCP server started on {port}"));
+            axum::Json(json!({ "ok": true, "port": port, "url": mcp::mcp_url() }))
+        }
+        Err(e) => axum::Json(json!({ "ok": false, "error": e })),
+    }
+}
+
+async fn api_mcp_stop(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let stopped = mcp::stop(&state);
+    if stopped {
+        push_activity(&state, "MCP server stopped".to_string());
+    }
+    axum::Json(json!({ "ok": stopped }))
 }
 
 // ---------------------------------------------------------------------------
